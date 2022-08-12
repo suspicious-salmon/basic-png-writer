@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 
+// CRC Generator
 /* Table of CRCs of all 8-bit messages. */
 unsigned long crc_table[256];
 
@@ -54,6 +55,7 @@ uint32_t get_crc(uint8_t* buf, int len)
     return update_crc(0xffffffffL, buf, len) ^ 0xffffffffL;
 }
 
+// Outputs all bytes of a given buffer (for example main_buffer) to the console
 template <typename T>
 void print_buffer(std::vector<uint8_t>& buffer, T val_ptr, size_t length, bool reverse = true) {
     uint8_t* start = reinterpret_cast<uint8_t*>(val_ptr);
@@ -101,69 +103,82 @@ void push_to_buffer(std::vector<uint8_t>& buffer, T val_ptr, size_t length, bool
 
 int main() {
     std::ofstream image;
+    // Open for writing in binary
     image.open("img2.png", std::ios::out | std::ios::binary);
 
+    // Width and height of image in pixels
     uint32_t width = 1;
     uint32_t height = 1;
 
     if (image.is_open()) {
 
-        // Every byte that will be output to the png file is first "pushed" into this buffer array. Then is it all written at once using write_list().
+        // The PNG file starts with a header, which is then followed by multiple chunks:
+        // IHDR, containing image's width, height, bit depth, colour type, compression method, filter method and interlace method
+        // IDAT, which contains the image's data (there may be multiple of these)
+        // IEND, identifying the end of the file. Its data section is empty.
+
+        // Each chunk has 4 sections:
+        // 4 bytes specifying the length of the chunk data in bytes, n
+        // 4 bytes identifying the chunk type (e.g. IHDR or PNG header)
+        // n bytes for the chunk data
+        // 4 bytes for the CRC, a parity check, which uses the bytes in the chunk type and chunk data sections
+
+        // Every byte that will be output to the png file is first "pushed" into this main buffer array. Then is it all written at once using write_list().
         std::vector<uint8_t> main_buffer;
 
-        // PNG header
+        // PNG Header
         main_buffer.insert(main_buffer.end(), {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'});
 
-        // this works, but is difficult to implement for the whole program. Instead of image.write I use my own function, write_list().
+        // this works too, but is difficult to implement for the whole program. Instead of image.write I use my own function, write_list().
         // uint8_t buffer[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
         // image.write(reinterpret_cast<char*>(buffer), 8);
 
-        // First section of IHDR pushed straight to buffer
+        // IHDR Chunk
+        // push chunk length to main buffer
         main_buffer.insert(main_buffer.end(), {0x0, 0x0, 0x0, 0x0D});
 
-        // Second section of IHDR, including width and height, pushed to ihdr_dat to allow for crc calculation later
-        std::vector<uint8_t> ihdr_dat; // stores data block of ihdr
+        // chunk type and chunk data
+        // these sections are stored in ihdr_dat to be used for CRC calculation later
+        std::vector<uint8_t> ihdr_dat;
 
         ihdr_dat.insert(ihdr_dat.end(), {'I', 'H', 'D', 'R'});
 
         push_to_buffer(ihdr_dat, &width, sizeof(width));
         push_to_buffer(ihdr_dat, &height, sizeof(height));
 
-        // Third section of IHDR, pushed to ihdr_dat to allow for crc calculation later
         ihdr_dat.insert(ihdr_dat.end(), {0x08, 0x02, 0x00, 0x00, 0x00});
 
-        // Push IHDR to buffer
+        // push IHDR chunk type and chunk data to main buffer
         push_to_buffer(main_buffer, &ihdr_dat[0], ihdr_dat.size(), false);
 
-        // CRC for IHDR & push to buffer
+        // calculate CRC for IHDR and push to main buffer
         uint32_t crc = get_crc(&ihdr_dat[0], ihdr_dat.size());
         push_to_buffer(main_buffer, &crc, sizeof(crc));
 
-        // PNG image data (IDAT chunk)
-
-        // size of chunk
+        // IDAT Chunk
+        // push chunk length to main buffer
         uint32_t size = 0x0c;
         push_to_buffer(main_buffer, &size, sizeof(size));
 
-        // stores data for CRC calculation
+        // chunk type and chunk data
+        // once again stored (in idat_dat) for CRC calculation later
         std::vector<uint8_t> idat_dat;
         
-        // identifier and other specifiers
+        // chunk type and other specifiers
         idat_dat.insert(idat_dat.end(), {'I', 'D', 'A', 'T', 0x08, 0xd7});
-
         // DEFLATE block (from wikipedia)
         idat_dat.insert(idat_dat.end(), {0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00});
         // ZLIB check value (from wikipedia)
         idat_dat.insert(idat_dat.end(), {0x03, 0x01, 0x01, 0x00});
 
-        // push IDAT to buffer
+        // push IDAT chunk type and chunk data to main buffer
         push_to_buffer(main_buffer, &idat_dat[0], idat_dat.size(), false);
 
-        // CRC for IDAT & push to buffer
+        // calculate CRC for IDAT and push to main buffer
         crc = get_crc(&idat_dat[0], idat_dat.size());
         push_to_buffer(main_buffer, &crc, sizeof(crc));
 
-        // IEND (end of png file)
+        // IEND Chunk (end of png file)
         main_buffer.insert(main_buffer.end(), {0x00, 0x00, 0x00, 0x00, 'I', 'E', 'N', 'D', 0xAE, 0x42, 0x60, 0x82});
 
         // send all to file
